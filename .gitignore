@@ -1,0 +1,18 @@
+@"
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+_archive_rag/
+*.Zone.Identifier
+.DS_Store
+.vscode/
+.idea/
+production/data/dataset_solar_global_tunisie.csv
+production/data/om_cache/
+news/data/news_headlines.json
+"@ | Set-Content -Encoding utf8 .gitignore

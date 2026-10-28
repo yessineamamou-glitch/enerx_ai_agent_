@@ -1,0 +1,149 @@
+{
+  "generated_at": "2026-10-07T17:42:50+00:00",
+  "location": {
+    "lat": 32.9297,
+    "lon": 10.4518
+  },
+  "capacity_kw": 10,
+  "assumptions": {
+    "tariff_dt_per_kwh": 0.217,
+    "n_tokens": 1000,
+    "news_coefficient": 1.002,
+    "weather_source": "Open-Meteo forecast API",
+    "irradiance_correction": 1.08,
+    "interval": "calibre sur la chaine complete (meteo Open-Meteo 'archive' vs PVGIS, mode absolute, calibration 2022)",
+    "model": "MLP 64-32 (sklearn) trained on PVGIS simulated data 2019-2023"
+  },
+  "days": [
+    {
+      "date": "2026-10-07",
+      "temperature_c": 26.3,
+      "irradiance_wh_m2": 6744.0,
+      "kwh": 50.17,
+      "kwh_low": 43.81,
+      "kwh_high": 55.49,
+      "revenue_dt": 10.909,
+      "dividend_per_token_dt": 0.010909,
+      "dividend_per_token_low_dt": 0.009526,
+      "dividend_per_token_high_dt": 0.012065
+    },
+    {
+      "date": "2026-10-08",
+      "temperature_c": 26.2,
+      "irradiance_wh_m2": 5451.0,
+      "kwh": 40.64,
+      "kwh_low": 34.28,
+      "kwh_high": 45.96,
+      "revenue_dt": 8.837,
+      "dividend_per_token_dt": 0.008837,
+      "dividend_per_token_low_dt": 0.007454,
+      "dividend_per_token_high_dt": 0.009993
+    },
+    {
+      "date": "2026-10-09",
+      "temperature_c": 25.5,
+      "irradiance_wh_m2": 6718.0,
+      "kwh": 50.2,
+      "kwh_low": 43.84,
+      "kwh_high": 55.52,
+      "revenue_dt": 10.915,
+      "dividend_per_token_dt": 0.010915,
+      "dividend_per_token_low_dt": 0.009532,
+      "dividend_per_token_high_dt": 0.012072
+    },
+    {
+      "date": "2026-10-10",
+      "temperature_c": 23.7,
+      "irradiance_wh_m2": 5626.0,
+      "kwh": 42.91,
+      "kwh_low": 36.55,
+      "kwh_high": 48.22,
+      "revenue_dt": 9.33,
+      "dividend_per_token_dt": 0.00933,
+      "dividend_per_token_low_dt": 0.007947,
+      "dividend_per_token_high_dt": 0.010485
+    },
+    {
+      "date": "2026-10-11",
+      "temperature_c": 22.4,
+      "irradiance_wh_m2": 2552.0,
+      "kwh": 19.82,
+      "kwh_low": 13.46,
+      "kwh_high": 25.13,
+      "revenue_dt": 4.31,
+      "dividend_per_token_dt": 0.00431,
+      "dividend_per_token_low_dt": 0.002927,
+      "dividend_per_token_high_dt": 0.005464
+    },
+    {
+      "date": "2026-10-12",
+      "temperature_c": 21.2,
+      "irradiance_wh_m2": 4477.0,
+      "kwh": 34.62,
+      "kwh_low": 28.26,
+      "kwh_high": 39.94,
+      "revenue_dt": 7.528,
+      "dividend_per_token_dt": 0.007528,
+      "dividend_per_token_low_dt": 0.006145,
+      "dividend_per_token_high_dt": 0.008684
+    },
+    {
+      "date": "2026-10-13",
+      "temperature_c": 20.6,
+      "irradiance_wh_m2": 4333.0,
+      "kwh": 33.6,
+      "kwh_low": 27.24,
+      "kwh_high": 38.92,
+      "revenue_dt": 7.306,
+      "dividend_per_token_dt": 0.007306,
+      "dividend_per_token_low_dt": 0.005923,
+      "dividend_per_token_high_dt": 0.008463
+    }
+  ],
+  "totals": {
+    "kwh": 271.96,
+    "revenue_dt": 59.135,
+    "dividend_per_token_dt": 0.059135
+  },
+  "news": {
+    "mode": "simule (mots-cles)",
+    "source_titres": "titres d'exemple fictifs",
+    "news_coef": 1.002,
+    "mean_impact": 0.02,
+    "risk_level": "eleve",
+    "max_adjustment": 0.1,
+    "headlines": [
+      {
+        "title": "[EXEMPLE FICTIF] La STEG annonce une hausse du tarif de rachat de l'energie solaire pour les petits producteurs",
+        "impact": 0.7,
+        "category": "Tarif",
+        "justification": "Hausse du tarif de rachat : revenus et dividendes en hausse."
+      },
+      {
+        "title": "[EXEMPLE FICTIF] Retard dans le paiement des producteurs d'energie renouvelable : la STEG evoque des difficultes de tresorerie",
+        "impact": -0.6,
+        "category": "Reseau/STEG",
+        "justification": "Risque de paiement de la STEG : dividendes potentiellement retardes."
+      },
+      {
+        "title": "[EXEMPLE FICTIF] Le ministere lance un programme de soutien aux toits solaires residentiels",
+        "impact": 0.3,
+        "category": "Politique",
+        "justification": "Politique favorable au solaire residentiel."
+      },
+      {
+        "title": "[EXEMPLE FICTIF] Une canicule est attendue en fin de semaine sur le nord du pays",
+        "impact": 0.0,
+        "category": "Meteo",
+        "justification": "Meteo deja prise en compte par le modele de production : pas de double comptage."
+      },
+      {
+        "title": "[EXEMPLE FICTIF] Panne de reseau dans le gouvernorat de Sfax",
+        "impact": -0.3,
+        "category": "Reseau/STEG",
+        "justification": "Incident reseau : injection ou rachat potentiellement perturbes."
+      }
+    ]
+  },
+  "report_hash": "878ff835ec8cf25a8ce42a5e31fc451f49e94e5ae85be33148bf7c9736936c9c"
+}

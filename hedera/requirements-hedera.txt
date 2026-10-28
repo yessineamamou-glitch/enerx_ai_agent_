@@ -1,0 +1,3 @@
+# Uniquement pour "hcs anchor.py" (ancrage Hedera) ; pas necessaire pour l'API
+hiero-sdk-python
+matplotlib

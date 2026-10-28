@@ -1,0 +1,74 @@
+{
+  "Tunis": {
+    "lat": 36.8065,
+    "lon": 10.1815,
+    "tilt": 33.0,
+    "azimuth": 0.0
+  },
+  "Bizerte": {
+    "lat": 37.2744,
+    "lon": 9.8739,
+    "tilt": 33.0,
+    "azimuth": 2.0
+  },
+  "Le_Kef": {
+    "lat": 36.1742,
+    "lon": 8.7049,
+    "tilt": 34.0,
+    "azimuth": -5.0
+  },
+  "Sousse": {
+    "lat": 35.8256,
+    "lon": 10.6369,
+    "tilt": 33.0,
+    "azimuth": -4.0
+  },
+  "Kairouan": {
+    "lat": 35.6781,
+    "lon": 10.0963,
+    "tilt": 34.0,
+    "azimuth": -5.0
+  },
+  "Kasserine": {
+    "lat": 35.1676,
+    "lon": 8.8365,
+    "tilt": 35.0,
+    "azimuth": -8.0
+  },
+  "Sfax": {
+    "lat": 34.74,
+    "lon": 10.76,
+    "tilt": 33.0,
+    "azimuth": -1.0
+  },
+  "Tozeur": {
+    "lat": 33.9197,
+    "lon": 8.1335,
+    "tilt": 34.0,
+    "azimuth": -3.0
+  },
+  "Gabes": {
+    "lat": 33.8881,
+    "lon": 10.0982,
+    "tilt": 33.0,
+    "azimuth": 0.0
+  },
+  "Matmata": {
+    "lat": 33.5435,
+    "lon": 9.9671,
+    "tilt": 33.0,
+    "azimuth": 0.0
+  },
+  "Djerba": {
+    "lat": 33.8076,
+    "lon": 10.8451,
+    "tilt": 33.0,
+    "azimuth": 1.0
+  },
+  "Tataouine": {
+    "lat": 32.9297,
+    "lon": 10.4518,
+    "tilt": 32.0,
+    "azimuth": -2.0
+  }
+}

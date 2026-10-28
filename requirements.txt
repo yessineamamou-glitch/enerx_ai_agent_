@@ -1,0 +1,14 @@
+# solar_agent.pkl a ete cree avec cette version de scikit-learn : un modele pickle depend de la version
+scikit-learn==1.9.1
+numpy
+pandas
+joblib
+requests
+fastapi
+uvicorn
+python-dotenv
+# etape 1 (collecte des news)
+feedparser
+trafilatura
+beautifulsoup4
+lxml

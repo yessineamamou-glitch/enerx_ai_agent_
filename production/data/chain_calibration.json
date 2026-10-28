@@ -1,0 +1,18 @@
+{
+  "source": "archive",
+  "mode": "absolute",
+  "calibration_year": 2022,
+  "test_year": 2023,
+  "res_low": -6.36,
+  "res_high": 5.316,
+  "rel_low": -0.1544,
+  "rel_high": 0.12,
+  "coverage_absolute": 0.803,
+  "coverage_relative": 0.806,
+  "mae_pvgis_weather": 0.648,
+  "mae_chain": 3.636,
+  "bias": -0.126,
+  "irradiance_ratio_om_over_pvgis": 1.0011,
+  "n_test_days": 4380,
+  "note": "Meteo historique : mesure l'ecart de source meteo + modele, PAS l'erreur de prevision a plusieurs jours (plus grande)."
+}
