@@ -1,0 +1,7 @@
+feedparser
+trafilatura
+beautifulsoup4
+lxml
+requests
+chromadb
+sentence-transformers

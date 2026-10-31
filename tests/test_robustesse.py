@@ -84,15 +84,45 @@ def test_rapport_valide_et_hash_intact(client):
         assert all(math.isfinite(v) for v in j.values() if isinstance(v, (int, float)))
 
 
-# ---------- les news n'influencent PAS le calcul ----------
-def test_news_n_influencent_pas_le_dividende(client):
-    base = client.get("/forecast", params={"lat": 36.8, "lon": 10.18, "capacity_kw": 10, "days": 5}).json()
-    # un ancien client qui enverrait news_coef / use_news : parametres ignores, resultat identique
-    autre = client.get("/forecast", params={"lat": 36.8, "lon": 10.18, "capacity_kw": 10, "days": 5,
-                                            "news_coef": 1.5, "use_news": "true"}).json()
-    assert base["totals"] == autre["totals"]
-    assert base["assumptions"]["news_coefficient"] == 1.0
-    assert "news" not in base
+# ---------- coefficient news : borne, tracable, desactivable ----------
+def _rapport_news(mult, statut="ok"):
+    from datetime import datetime
+    from rag import coefficient_news as cn
+    return {"date": datetime.now(cn.TUNIS).date().isoformat(), "version_methode": "1.0", "coefficient_news": 0.75,
+            "coefficient_multiplicateur": mult, "tendance": "favorable", "statut": statut, "couverture": 1.0,
+            "empreinte_sha256": "ab" * 32, "methode": {"avertissement": "test"},
+            "details": [{"id": "Q1", "categorie": "Reseau/STEG", "statut": "ok", "poids": 0.3, "impact": 0.2,
+                         "sources": [{"url": "https://managers.tn/x", "date_article": "2026-10-23"}]}]}
+
+
+def test_coefficient_news_applique_et_trace(client, monkeypatch):
+    from rag import coefficient_service as cs
+    p = {"lat": 36.8, "lon": 10.18, "capacity_kw": 10, "days": 5}
+    seul = client.get("/forecast", params={**p, "use_news": "false"}).json()
+    monkeypatch.setattr(cs, "_lire_rapport_du_jour", lambda: _rapport_news(1.05))
+    avec = client.get("/forecast", params=p).json()
+    assert seul["assumptions"]["news_coefficient"] == 1.0 and "news" not in seul
+    assert avec["assumptions"]["news_coefficient"] == 1.05
+    assert avec["totals"]["revenue_dt"] == pytest.approx(seul["totals"]["revenue_dt"] * 1.05, rel=1e-3)
+    assert avec["news"]["rapport_sha256"] == "ab" * 32 and avec["news"]["questions"][0]["sources"]
+    assert avec["report_hash"] != seul["report_hash"]                  # le coefficient est couvert par le hash
+
+
+def test_sans_rapport_du_jour_le_coefficient_est_neutre_et_signale(client, monkeypatch):
+    from rag import coefficient_service as cs
+    monkeypatch.setattr(cs, "_lire_rapport_du_jour", lambda: None)
+    monkeypatch.setattr(cs, "_lancer_calcul", lambda: None)
+    r = client.get("/forecast", params={"lat": 36.8, "lon": 10.18, "capacity_kw": 10, "days": 3}).json()
+    assert r["assumptions"]["news_coefficient"] == 1.0 and "news" not in r
+    assert any("news" in w.lower() for w in r["warnings"])
+
+
+def test_rapport_degrade_garde_son_coefficient_avec_avertissement(client, monkeypatch):
+    from rag import coefficient_service as cs
+    monkeypatch.setattr(cs, "_lire_rapport_du_jour", lambda: _rapport_news(0.95, "degrade"))
+    monkeypatch.setattr(cs, "_lancer_calcul", lambda: None)
+    r = client.get("/forecast", params={"lat": 36.8, "lon": 10.18, "capacity_kw": 10, "days": 3}).json()
+    assert r["assumptions"]["news_coefficient"] == 0.95 and any("partiel" in w for w in r["warnings"])
 
 
 def test_endpoint_news_forme_et_information_seulement(client, monkeypatch):

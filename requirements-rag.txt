@@ -1,0 +1,4 @@
+# OPTIONNEL : backend vectoriel du RAG (ENERX_RAG_BACKEND=chroma). Sans ces paquets, /ask utilise BM25.
+# Premier lancement : telechargement du modele d'embedding (~470 Mo) depuis Hugging Face.
+chromadb
+sentence-transformers

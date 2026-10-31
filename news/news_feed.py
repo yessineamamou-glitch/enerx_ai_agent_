@@ -115,5 +115,5 @@ def get_news():
         "items": items,
         "origin": origin,                      # etape1 | gdelt | vide
         "refreshing": _state["running"],
-        "informational_only": True,            # ces news ne modifient AUCUN chiffre de prevision
+        "informational_only": True,            # la liste d'articles elle-meme ne calcule rien (le coefficient du jour vient de rag/coefficient_service.py)
     }

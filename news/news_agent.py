@@ -20,7 +20,7 @@ import requests
 HERE = os.path.dirname(os.path.abspath(__file__))
 try:                                   # lit le fichier .env (cles API, options) s'il existe
     from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    load_dotenv(os.path.join(os.path.dirname(HERE), ".env"))   # .env a la racine du projet
 except ImportError:
     pass
 HEADLINES_FILE = os.path.join(HERE, "data", "news_headlines.json")   # optionnel : liste de titres a toi

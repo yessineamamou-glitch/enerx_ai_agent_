@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+EnerX - Coefficient News : jonction entre le RAG (etape3_rag.py) et le calcul du dividende.
+
+Chaque jour, 4 questions standard sont posees a la base vectorielle via etape3_rag.poser_question().
+Chaque reponse est convertie en un impact signe [-1, +1], pondere par la fraicheur des sources, puis
+agregee en un indice unique dans [0.0, 1.0] (0.5 = neutre, <0.5 defavorable, >0.5 favorable).
+Le rapport JSON liste, pour chaque reponse, les URL et dates des articles utilises (audit du jury).
+
+Usage :
+    python coefficient_news.py                       # calcule (ou relit) le rapport du jour
+    python coefficient_news.py --force --llm gemini  # recalcule
+    python coefficient_news.py --planifier 06:30     # boucle quotidienne a 06:30 (heure de Tunis)
+    (ou planificateur de taches Windows / cron : une execution par jour suffit)
+
+Depuis le code :
+    from coefficient_news import coefficient_du_jour
+    r = coefficient_du_jour()
+    build_report(..., news_coef=r["coefficient_multiplicateur"], news=r)   # aggregator.py
+
+Limites assumees : regles par mots-cles et poids = choix de conception, NON calibres sur des donnees.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+import re
+import sys
+import time
+import unicodedata
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable, Optional
+
+try:                                    # lit .env (GEMINI_API_KEY, ...) s'il existe, comme news_agent.py
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
+log = logging.getLogger("enerx.coefficient_news")
+
+# ----------------------------------------------------------------------------
+# Parametres
+# ----------------------------------------------------------------------------
+VERSION_METHODE = "1.0"
+TUNIS = timezone(timedelta(hours=1))             # Tunisie : UTC+1 toute l'annee, sans heure d'ete
+DOSSIER_RAPPORTS = Path(os.environ.get("ENERX_NEWS_DIR", "rapports_news"))
+DEMI_VIE_JOURS = 14.0                            # une source de 14 jours compte pour moitie
+FRAICHEUR_DATE_INCONNUE = 0.5                    # si aucune source n'a de date exploitable
+MAX_AJUST = 0.10                                 # identique a news_agent.MAX_ADJUST : multiplicateur dans [0.90, 1.10]
+SEUIL_FAVORABLE, SEUIL_DEFAVORABLE = 0.60, 0.40
+
+Poseur = Callable[[str], dict]                   # question -> {"reponse": str, "sources": [...], ...}
+
+
+@dataclass(frozen=True)
+class QuestionStandard:
+    id: str
+    categorie: str
+    texte: str
+    poids: float
+
+
+QUESTIONS_STANDARD = (
+    QuestionStandard(
+        "Q1", "Reseau/STEG",
+        "Y a-t-il une coupure, une panne ou un incident réseau majeur annoncé sur le réseau électrique "
+        "Tunisien ou par la STEG ?", 0.30),
+    QuestionStandard(
+        "Q2", "Tarif/Reglementation",
+        "Y a-t-il un changement de tarif, une hausse de prix, ou une nouvelle réglementation sur l'achat "
+        "ou la vente d'électricité solaire et d'énergies renouvelables ?", 0.25),
+    QuestionStandard(
+        "Q3", "Projets BESS/Solaire",
+        "Y a-t-il des avancées majeures, des signatures de contrats, ou des lancements de projets liés aux "
+        "stations de stockage par batterie BESS ou aux centrales solaires de la STEG ?", 0.20),
+    QuestionStandard(
+        "Q4", "Conjoncture",
+        "Quelle est la tendance générale de la conjoncture énergétique actuelle en Tunisie "
+        "(positive, stable, ou sous tension budgétaire/déficit énergétique) ?", 0.25),
+)
+assert abs(sum(q.poids for q in QUESTIONS_STANDARD) - 1.0) < 1e-9, "les poids doivent sommer a 1"
+
+
+# ----------------------------------------------------------------------------
+# Analyse du texte : regles (regex sur texte normalise) -> impact signe
+# ----------------------------------------------------------------------------
+def normaliser_texte(texte: str) -> str:
+    """Minuscules, sans accents, apostrophes droites, espaces compresses."""
+    t = unicodedata.normalize("NFKD", texte or "")
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = t.lower().replace("’", "'").replace("`", "'")
+    return re.sub(r"\s+", " ", t).strip()
+
+
+_NEGATION = re.compile(r"\b(aucun|aucune|pas|ni|sans|nul|nulle|non|absence|jamais)\b")
+
+
+def _nie(texte: str, m: re.Match) -> bool:
+    """Vrai si l'occurrence est niee : negation dans la meme phrase juste avant, ou dans l'empan lui-meme."""
+    avant = re.split(r"[.;!?:]", texte[max(0, m.start() - 45):m.start()])[-1]
+    return bool(_NEGATION.search(avant) or _NEGATION.search(m.group(0)))
+
+
+def _r(motif: str, valeur: float, etiquette: str):
+    return re.compile(motif), valeur, etiquette
+
+
+def _evaluer(texte: str, regles) -> list[dict]:
+    """Une entree par regle declenchee (premiere occurrence non niee)."""
+    signaux = []
+    for motif, valeur, etiquette in regles:
+        for m in motif.finditer(texte):
+            if not _nie(texte, m):
+                signaux.append({"etiquette": etiquette, "valeur": valeur, "extrait": m.group(0)[:80]})
+                break
+    return signaux
+
+
+def _borner(x: float, bas: float = -1.0, haut: float = 1.0) -> float:
+    return max(bas, min(haut, x))
+
+
+def _combiner(signaux: list[dict]) -> float:
+    """Signal positif le plus fort + signal negatif le plus fort : la repetition d'une meme nouvelle ne gonfle pas le score."""
+    pos = [s["valeur"] for s in signaux if s["valeur"] > 0]
+    neg = [s["valeur"] for s in signaux if s["valeur"] < 0]
+    return _borner(max(pos, default=0.0) + min(neg, default=0.0))
+
+
+_HAUSSE = r"(?:hausse|augmentation|relevement|revalorisation|majoration)"
+_BAISSE = r"(?:baisse|reduction|diminution|abaissement)"
+_RACHAT = r"(?:rachat|injection|producteur|solaire|photovolta|renouvelable|autoconsommation)"
+_CONJ = r"(?:conjoncture|tendance|situation|contexte)"
+
+# Q1 - incident reseau : toujours negatif ; la gravite l'accentue, une resolution l'attenue.
+REGLES_Q1 = [
+    _r(r"\b(?:coupure|panne|incident|defaillance|interruption|perturbation)s?\b[^.;]{0,50}"
+       r"\b(?:majeur|generalis|massif|etendu|plusieurs gouvernorats|plusieurs heures)", -0.9, "incident_reseau_majeur"),
+    _r(r"\b(?:delestage|black-?out|effondrement du reseau)", -0.9, "delestage_ou_blackout"),
+    _r(r"\b(?:coupure|panne|incident|defaillance|interruption|perturbation)s?\b", -0.5, "incident_reseau"),
+]
+ATTENUANTS_Q1 = [_r(r"\b(?:retabli|repare|resolu|regle|retour a la normale|maitrise)", 0.3, "incident_resolu")]
+
+# Q2 - tarif / reglementation : le sens depend du contexte (hausse du tarif de RACHAT = + pour les revenus).
+REGLES_Q2 = [
+    _r(r"\b" + _HAUSSE + r"\b[^.;]{0,60}\b" + _RACHAT + r"|\b" + _RACHAT + r"[^.;]{0,40}\b" + _HAUSSE,
+       +0.6, "hausse_tarif_rachat"),
+    _r(r"\b" + _BAISSE + r"\b[^.;]{0,60}\b" + _RACHAT + r"|\b" + _RACHAT + r"[^.;]{0,40}\b" + _BAISSE,
+       -0.6, "baisse_tarif_rachat"),
+    _r(r"\b" + _HAUSSE + r"\b[^.;]{0,40}\b(?:tarif|prix)", 0.0, "hausse_tarif_non_qualifiee"),
+    _r(r"\b(?:incitation|incitative|subvention|exoneration|avantage fiscal|programme de soutien|simplification|"
+       r"liberalisation|assouplissement|encouragement|facilitation|autorisation)", +0.4, "mesure_incitative"),
+    _r(r"\b(?:suspension|moratoire|plafonnement|nouvelle taxe|taxe sur|durcissement|restriction|interdiction|"
+       r"annulation|gel des|retard de paiement|impayes)", -0.5, "mesure_restrictive"),
+]
+
+# Q3 - projets BESS / centrales solaires : progression = positif, retard / blocage = negatif.
+REGLES_Q3 = [
+    _r(r"\b(?:mise en service|mis en service|mise en exploitation|inaugur|achevement|signature|signe[es]?\b|"
+       r"contrat attribue|attribue[es]?\b|conclu)", +0.8, "jalon_majeur"),
+    _r(r"\b(?:lancement|lance[es]?\b|appel d'offres|appel a manifestation|demarrage|debut des travaux|"
+       r"financement|extension|nouvelle centrale|nouveau projet|en construction)", +0.5, "lancement_ou_financement"),
+    _r(r"\b(?:retard|reports?\b|reporte|suspendu|annul|abandon|blocage|gel des|difficultes? de financement)",
+       -0.6, "retard_ou_blocage"),
+]
+
+# Q4 - conjoncture : la question propose elle-meme les 3 etiquettes (positive / stable / sous tension).
+REGLES_Q4 = [
+    _r(r"\b" + _CONJ + r"\b[^.;]{0,60}\b(?:positive|favorable|amelior|encourage|embellie|reprise)",
+       +0.7, "tendance_positive"),
+    _r(r"\b(?:sous tension|tensions? budgetaires?|deficit energetique|deficit budgetaire|deficit|degradation|"
+       r"deterioration|crise|penurie)", -0.8, "tension_deficit"),
+    _r(r"\b" + _CONJ + r"\b[^.;]{0,60}\b(?:tendue|difficile|critique|preoccupant|fragile)", -0.6, "tendance_tendue"),
+    _r(r"\b" + _CONJ + r"\b[^.;]{0,60}\b(?:stable|stationnaire|inchangee)", 0.0, "tendance_stable"),
+]
+
+
+def _score_regles(texte: str, regles) -> tuple[float, list[dict]]:
+    signaux = _evaluer(texte, regles)
+    return _combiner(signaux), signaux
+
+
+def _score_q1(texte: str) -> tuple[float, list[dict]]:
+    signaux = _evaluer(texte, REGLES_Q1)
+    if not signaux:                                   # pas d'incident : une "resolution" seule ne compte pas
+        return 0.0, []
+    signaux += _evaluer(texte, ATTENUANTS_Q1)
+    return min(0.0, _combiner(signaux)), signaux
+
+
+EVALUATEURS: dict[str, Callable[[str], tuple[float, list[dict]]]] = {
+    "Q1": _score_q1,
+    "Q2": lambda t: _score_regles(t, REGLES_Q2),
+    "Q3": lambda t: _score_regles(t, REGLES_Q3),
+    "Q4": lambda t: _score_regles(t, REGLES_Q4),
+}
+
+
+# ----------------------------------------------------------------------------
+# Sources : normalisation de la structure renvoyee par etape3_rag + fraicheur
+# ----------------------------------------------------------------------------
+def _normaliser_sources(brut) -> list[dict]:
+    """Accepte une liste de dicts (titre/source/url/date/distance) ou de simples URL ; dedoublonne par URL."""
+    sources, vus = [], set()
+    for s in brut or []:
+        if isinstance(s, str):
+            s = {"url": s}
+        if not isinstance(s, dict):
+            continue
+        url = s.get("url") or s.get("lien")
+        if not url or url in vus:
+            continue
+        vus.add(url)
+        distance = s.get("distance")
+        sources.append({
+            "titre": s.get("titre") or s.get("title"),
+            "source": s.get("source"),
+            "url": url,
+            "date_article": s.get("date") or s.get("date_article"),
+            "distance": round(float(distance), 4) if isinstance(distance, (int, float)) else None,
+        })
+    return sources
+
+
+def _parse_date(valeur) -> Optional[date]:
+    try:
+        return date.fromisoformat(str(valeur)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _fraicheur(sources: list[dict], aujourd_hui: date) -> tuple[float, Optional[int]]:
+    """Fraicheur de la source la plus recente : 0.5 ** (age / demi-vie). Retourne (facteur, age_en_jours)."""
+    ages = [max(0, (aujourd_hui - d).days) for d in (_parse_date(s["date_article"]) for s in sources) if d]
+    if not ages:
+        return FRAICHEUR_DATE_INCONNUE, None
+    return 0.5 ** (min(ages) / DEMI_VIE_JOURS), min(ages)
+
+
+# ----------------------------------------------------------------------------
+# Interrogation du RAG
+# ----------------------------------------------------------------------------
+def creer_poseur(llm: str = "gemini", chemin_chroma: Optional[str] = None) -> Poseur:
+    """Branche le module sur etape2/etape3 : ouvre ChromaDB et charge l'embedder UNE seule fois."""
+    import etape2_vectorisation as e2
+    import etape3_rag as e3
+
+    collection = e2.ouvrir_collection(chemin=chemin_chroma) if chemin_chroma else e2.ouvrir_collection()
+    embedder = e2.Embedder()
+
+    def poseur(question: str) -> dict:
+        res = dict(e3.poser_question(question, llm=llm, collection=collection, embedder=embedder))
+        res["inconnue"] = res.get("reponse") == getattr(e3, "REPONSE_INCONNUE", object())
+        return res
+
+    poseur.llm = llm
+    return poseur
+
+
+def _interroger(poseur: Poseur, question: str, essais: int, pause: float) -> tuple[Optional[dict], Optional[str]]:
+    erreur = None
+    for tentative in range(1, essais + 1):
+        try:
+            res = poseur(question)
+            return (res if isinstance(res, dict) else {"reponse": str(res), "sources": []}), None
+        except Exception as e:                       # 503 Gemini, reseau, quota... : on retente puis on degrade
+            erreur = f"{type(e).__name__}: {e}"
+            log.warning("Question echouee (tentative %d/%d) : %s", tentative, essais, erreur)
+            if tentative < essais:
+                time.sleep(pause)
+    return None, erreur
+
+
+def _traiter_question(q: QuestionStandard, poseur: Poseur, aujourd_hui: date, essais: int, pause: float) -> dict:
+    detail = {
+        "id": q.id, "categorie": q.categorie, "question": q.texte, "poids": q.poids,
+        "horodatage_requete": datetime.now(TUNIS).isoformat(timespec="seconds"),
+        "statut": "erreur", "reponse": "", "impact_brut": 0.0, "fraicheur": None, "age_source_min_jours": None,
+        "impact": 0.0, "contribution": 0.0, "signaux": [], "sources": [], "erreur": None,
+    }
+    res, erreur = _interroger(poseur, q.texte, essais, pause)
+    if erreur:
+        detail["erreur"] = erreur
+        return detail
+
+    reponse = str(res.get("reponse") or "").strip()
+    sources = _normaliser_sources(res.get("sources"))
+    detail.update(reponse=reponse, sources=sources)
+
+    if res.get("inconnue") or not reponse:
+        detail["statut"] = "sans_information"
+        return detail
+
+    impact_brut, signaux = EVALUATEURS[q.id](normaliser_texte(reponse))
+    fraicheur, age = _fraicheur(sources, aujourd_hui)
+    detail.update(impact_brut=round(impact_brut, 3), signaux=signaux,
+                  fraicheur=round(fraicheur, 3), age_source_min_jours=age)
+
+    if not sources:                                   # affirmation invérifiable : ne doit pas peser dans l'audit
+        detail["statut"] = "non_sourcee"
+    elif signaux:
+        detail["statut"] = "ok"
+        detail["impact"] = round(impact_brut * fraicheur, 3)
+    else:
+        detail["statut"] = "sans_signal"
+    return detail
+
+
+# ----------------------------------------------------------------------------
+# Agregation
+# ----------------------------------------------------------------------------
+def vers_multiplicateur(indice: float, max_ajust: float = MAX_AJUST) -> float:
+    """Indice [0,1] -> multiplicateur de dividende dans [1-max_ajust, 1+max_ajust] (0.5 -> 1.0)."""
+    return round(1.0 + max_ajust * (2.0 * indice - 1.0), 4)
+
+
+def empreinte(rapport: dict) -> str:
+    """SHA-256 du JSON canonique (cles triees, separateurs compacts), hors champ 'empreinte_sha256'."""
+    corps = {k: v for k, v in rapport.items() if k != "empreinte_sha256"}
+    canonique = json.dumps(corps, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonique.encode("utf-8")).hexdigest()
+
+
+def calculer_coefficient_news(poseur: Poseur, questions=QUESTIONS_STANDARD,
+                              maintenant: Optional[datetime] = None, essais: int = 2, pause: float = 2.0) -> dict:
+    """Pose les questions, note les reponses et retourne le rapport quotidien (dict serialisable en JSON)."""
+    maintenant = maintenant or datetime.now(TUNIS)
+    details = [_traiter_question(q, poseur, maintenant.date(), essais, pause) for q in questions]
+
+    somme_poids = sum(d["poids"] for d in details)
+    somme_ponderee = sum(d["poids"] * d["impact"] for d in details)
+    indice = round(_borner(0.5 + 0.5 * somme_ponderee / somme_poids, 0.0, 1.0), 3)
+    for d in details:
+        d["contribution"] = round(0.5 * d["poids"] * d["impact"] / somme_poids, 4)   # somme = indice - 0.5
+
+    nb_erreurs = sum(d["statut"] == "erreur" for d in details)
+    statut = "indisponible" if nb_erreurs == len(details) else "degrade" if nb_erreurs else "ok"
+    couverture = sum(d["poids"] for d in details if d["statut"] == "ok") / somme_poids
+    tendance = ("favorable" if indice >= SEUIL_FAVORABLE else
+                "defavorable" if indice <= SEUIL_DEFAVORABLE else "neutre")
+
+    rapport = {
+        "date": maintenant.date().isoformat(),
+        "horodatage": maintenant.isoformat(timespec="seconds"),
+        "version_methode": VERSION_METHODE,
+        "llm": getattr(poseur, "llm", None),
+        "coefficient_news": indice,
+        "coefficient_multiplicateur": vers_multiplicateur(indice),
+        "tendance": tendance,
+        "statut": statut,
+        "couverture": round(couverture, 3),
+        "nb_erreurs": nb_erreurs,
+        "methode": {
+            "formule": "indice = 0.5 + 0.5 * somme(poids * impact) / somme(poids), impact dans [-1, +1]",
+            "impact": "impact_brut (regles par mots-cles, negation geree) * fraicheur de la source la plus recente",
+            "fraicheur": f"0.5 ** (age_jours / {DEMI_VIE_JOURS:g}) ; {FRAICHEUR_DATE_INCONNUE} si date inconnue",
+            "neutre": 0.5,
+            "avertissement": "Poids et regles = choix de conception, non calibres sur des donnees.",
+        },
+        "details": details,
+    }
+    rapport["empreinte_sha256"] = empreinte(rapport)
+    return rapport
+
+
+# ----------------------------------------------------------------------------
+# Persistance et execution quotidienne
+# ----------------------------------------------------------------------------
+def chemin_rapport(jour: date, dossier: Path = DOSSIER_RAPPORTS) -> Path:
+    return Path(dossier) / f"coefficient_news_{jour.isoformat()}.json"
+
+
+def sauvegarder_rapport(rapport: dict, dossier: Path = DOSSIER_RAPPORTS) -> Path:
+    chemin = chemin_rapport(date.fromisoformat(rapport["date"]), dossier)
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    tmp = chemin.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rapport, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(chemin)                               # ecriture atomique
+    return chemin
+
+
+def coefficient_du_jour(poseur: Optional[Poseur] = None, llm: str = "gemini", force: bool = False,
+                        dossier: Path = DOSSIER_RAPPORTS) -> dict:
+    """Rapport du jour : relu depuis le disque s'il est deja complet, sinon calcule puis sauvegarde."""
+    chemin = chemin_rapport(datetime.now(TUNIS).date(), dossier)
+    if chemin.exists() and not force:
+        try:
+            rapport = json.loads(chemin.read_text(encoding="utf-8"))
+            if rapport.get("statut") == "ok":         # un rapport degrade est recalcule a l'appel suivant
+                return rapport
+        except (OSError, ValueError):
+            log.warning("Rapport existant illisible, recalcul : %s", chemin)
+    rapport = calculer_coefficient_news(poseur or creer_poseur(llm))
+    sauvegarder_rapport(rapport, dossier)
+    return rapport
+
+
+def _secondes_avant(heure: str, maintenant: datetime) -> float:
+    h, m = (int(x) for x in heure.split(":"))
+    cible = maintenant.replace(hour=h, minute=m, second=0, microsecond=0)
+    if cible <= maintenant:
+        cible += timedelta(days=1)
+    return (cible - maintenant).total_seconds()
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="EnerX - Coefficient News quotidien (RAG -> indice 0..1)")
+    ap.add_argument("--llm", default="gemini", help="backend de etape3_rag.LLMS (gemini, ollama...)")
+    ap.add_argument("--chroma", default=None, help="dossier ChromaDB (defaut : celui d'etape2)")
+    ap.add_argument("--force", action="store_true", help="recalcule meme si le rapport du jour existe")
+    ap.add_argument("--planifier", metavar="HH:MM", help="reste actif et execute chaque jour a cette heure (Tunis)")
+    args = ap.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    poseur = creer_poseur(args.llm, args.chroma)
+    if not args.planifier:
+        rapport = coefficient_du_jour(poseur, force=args.force)
+        print(json.dumps(rapport, ensure_ascii=False, indent=2))
+        return 0 if rapport["statut"] != "indisponible" else 1
+
+    try:
+        while True:
+            attente = _secondes_avant(args.planifier, datetime.now(TUNIS))
+            log.info("Prochaine execution dans %.0f min", attente / 60)
+            time.sleep(attente)
+            try:
+                r = coefficient_du_jour(poseur, force=True)
+                log.info("Coefficient News %s = %s (%s)", r["date"], r["coefficient_news"], r["statut"])
+            except Exception:
+                log.exception("Echec de l'execution quotidienne")
+    except KeyboardInterrupt:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

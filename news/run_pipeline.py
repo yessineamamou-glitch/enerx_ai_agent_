@@ -13,6 +13,8 @@ STEPS = [
     ([sys.executable, "-m", "news.etape1_collecte", "--max", "6"], False),
     ([sys.executable, "-m", "news.nettoyer_articles"], False),
     ([sys.executable, "-m", "news.injecter_steg"], True),
+    # facultatif (pip install -r requirements-rag.txt) : indexe les articles dans ChromaDB pour /ask (ENERX_RAG_BACKEND=chroma)
+    ([sys.executable, "-m", "rag.etape2_vectorisation"], False),
 ]
 for cmd, bloquant in STEPS:
     print("\nExecution :", " ".join(cmd[1:]))

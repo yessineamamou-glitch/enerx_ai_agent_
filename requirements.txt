@@ -12,3 +12,6 @@ feedparser
 trafilatura
 beautifulsoup4
 lxml
+# tests (python -m pytest -q tests)
+pytest
+httpx

@@ -1,6 +1,6 @@
 """
 EnerX - Agent de prediction de production solaire (kWh/jour)
-Reseau de neurones : entrees -> 64 -> 32 -> 1 sortie
+Reseau de neurones : entrees -> 128 -> 64 -> 32 -> 1 sortie
 
 Pipeline : chargement -> agregation par jour -> features -> split train/dev/test
            -> normalisation -> entrainement -> evaluation -> intervalle -> sauvegarde
