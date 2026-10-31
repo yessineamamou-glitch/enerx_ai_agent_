@@ -213,7 +213,7 @@ The suite covers physical plausibility of the forecast, absurd inputs, the repor
 
 ```
 .
-├── README.md  HANDOFF.md
+
 ├── ai/                          FastAPI AI service (Python)
 │   ├── api.py                   entry point: /health /forecast /news /ask
 │   ├── production/              forecast model, aggregator (dividend + hash), FX, evaluation tools
