@@ -248,10 +248,7 @@ Source comments and some module names are in French (the team's working language
 * Official TND/USDC rate feed and automatic anchoring of each published report.
 * Align the dashboard with the main backend routes (see `HANDOFF.md`).
 
-## Team, data sources and license
-
-**Team:** *[add names and roles]*
 
 **Data and services:** [Open‑Meteo](https://open-meteo.com) (weather forecast and historical weather) · [PVGIS](https://joint-research-centre.ec.europa.eu/pvgis-photovoltaic-geographical-information-system_en) (EU Joint Research Centre, simulated PV production and tilt) · Tunisian press and official STEG notices (news) · [Hedera](https://hedera.com) (HTS, HSCS, HCS).
 
-**License:** *[choose a license, e.g. MIT, and add a `LICENSE` file]*
+
