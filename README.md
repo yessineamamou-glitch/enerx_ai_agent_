@@ -1,173 +1,257 @@
-# EnerX — AI Agent (solar yield forecasting + auditable reports on Hedera)
+# EnerX
 
-EnerX is a decentralized platform that finances residential solar plants in Tunisia through tokenized real-world assets on Hedera. Investors buy EnerTokens (HTS), funds are escrowed in a smart contract (HSCS), owners prove roof ownership with a Hedera DID, and dividends come from the electricity sold to the national utility (STEG).
+**AI-forecast solar dividends for tokenized rooftop plants in Tunisia, with reports anyone can verify on Hedera.**
 
-This repository contains the **AI agent module**: it forecasts the daily production of any solar roof in Tunisia, converts it into an expected dividend per token, adjusts the figure with a news-risk agent, and anchors a hash of every report on **Hedera Consensus Service (HCS)** so that forecasts are immutable and auditable.
+EnerX is a decentralized platform that finances residential solar plants in Tunisia through tokenized real-world assets on [Hedera](https://hedera.com). Investors buy **EnerTokens** (HTS), funds are escrowed in a smart contract (HSCS), roof owners prove ownership with a Hedera DID, and dividends come from the electricity sold to the national utility **STEG**.
 
-> Hackathon: ISGT Campus Edition — Hedera Cross Campus Challenge 2026 (themes: Real-World Assets, DeFi, Digital Identity, AI × Web3 Agents).
-> Team: [TODO: team members and roles]
+This repository contains the **AI agent** (a FastAPI service) and the **web dashboard** (Next.js) that uses it. The agent forecasts the daily production of any roof in Tunisia, turns it into an expected **dividend per token**, adjusts it with a bounded news signal, and publishes a **SHA-256 fingerprint of every report on the Hedera Consensus Service (HCS)**, so a forecast cannot be silently edited after the fact.
 
-## How it works
+> Built for the **ISGT Campus Edition – Hedera Cross Campus Challenge 2026**
+> (themes: Real-World Assets · DeFi · Digital Identity · AI × Web3 Agents).
+
+---
+
+## Table of contents
+
+1. [What it does](#what-it-does)
+2. [Architecture](#architecture)
+3. [Results](#results)
+4. [How the dividend is computed](#how-the-dividend-is-computed)
+5. [Quick start](#quick-start)
+6. [API](#api)
+7. [News, RAG and the news coefficient](#news-rag-and-the-news-coefficient)
+8. [Hedera integration](#hedera-integration)
+9. [Configuration](#configuration)
+10. [Testing](#testing)
+11. [Repository layout](#repository-layout)
+12. [Limitations](#limitations)
+13. [Roadmap](#roadmap)
+14. [Team, data sources and license](#team-data-sources-and-license)
+
+---
+
+## What it does
+
+| Capability | Description |
+|---|---|
+| **Production forecast** | Neural network (MLP 128‑64‑32) turns Open‑Meteo weather into kWh/day for any roof in Tunisia, with an 80 % error range. |
+| **Dividend per token** | `forecast kWh × STEG tariff × news coefficient ÷ tokens`, in DT and in USDC (the exchange rate is computed by the backend, never the front end). |
+| **News feed** | Relevant Tunisian energy / STEG articles are collected, filtered and displayed. |
+| **Ask EnerX (RAG)** | Cited question answering over the project documentation and recent news, in French or English. Works offline; an LLM is optional. |
+| **News coefficient** | A daily index (0.90 – 1.10) derived from four standard questions put to the news RAG. Neutral (1.0) when unavailable. |
+| **Auditable reports** | Every report carries a canonical SHA-256 hash that can be anchored on Hedera HCS and verified by anyone. |
+| **Dashboard** | Investor marketplace, owner tools and an AI predictor tab (charts, revenue split, news panel, Ask EnerX). |
+
+## Architecture
 
 ```
  roof (lat, lon, kW)
-        |
-        v
- Open-Meteo forecast --> daily temperature + irradiance
-        |
-        v
- Neural network (MLP 128-64-32-1) --> kWh/day  (+ 80 % error range)
-        |
-        v
- News agent (keywords or Claude LLM) --> coefficient 0.90 - 1.10 + risk level
-        |
-        v
- Aggregator: kWh x STEG tariff x news coefficient / number of tokens
-        |
-        v
- JSON report + SHA-256 hash --> anchored on Hedera Consensus Service
-        ^
-        |
- FastAPI  (/forecast, /news, /health)  <-- called by the dashboard / backend
+        │
+        ▼
+ Open-Meteo forecast ──► daily temperature + irradiance
+        │
+        ▼
+ Neural network (MLP 128-64-32-1) ──► kWh/day  (+ 80 % error range)
+        │
+        │            ┌──────────────────────────────────────────────┐
+        │            │ Daily news coefficient (0.90 – 1.10)         │
+        │            │ press scraping → ChromaDB / BM25 → 4 standard│
+        │            │ questions → rules + freshness → index 0–1    │
+        │            └──────────────────┬───────────────────────────┘
+        ▼                               ▼
+ Aggregator: kWh × STEG tariff × news coefficient ÷ tokens   (+ TND → USDC)
+        │
+        ▼
+ JSON report + SHA-256 hash ──► anchored on Hedera Consensus Service (HCS)
+        ▲
+        │
+ FastAPI  /forecast · /news · /ask · /health   ◄── Next.js dashboard
 ```
+
+Two backends exist side by side: this **AI service** (`ai/`, port 8001, read-only) and the platform's **main backend** (auth, projects, marketplace, investments), configured in `front/.env.local`. See [`HANDOFF.md`](HANDOFF.md) for the integration notes.
 
 ## Results
 
-Trained on 12 Tunisian cities, 2019–2023 (daily data). Split by date: train 2019–2021, dev 2022, test 2023.
+Trained on **12 Tunisian cities, 2019–2023** (daily data). Split by date: train 2019–2021, dev 2022, test 2023.
 
 | Metric (test year 2023) | Result |
 |---|---|
-| MAE | 0.65 kWh/day (about 1.4 % of mean production) |
+| MAE (PVGIS weather as input) | **0.65 kWh/day** (about 1.4 % of mean production) |
 | R² | 0.995 |
 | Linear regression baseline | 0.87 kWh/day |
 | "Yesterday = today" baseline | 6.99 kWh/day |
-| Error range coverage (10th–90th percentile of dev errors) | 80 % of test days |
-| **Cities never seen in training** (Tataouine, Kasserine, Bizerte, Tozeur; test year only) | **0.85 kWh/day** (linear regression: 1.11) |
+| 80 % error range, empirical coverage | 80 % of test days |
+| Cities never seen in training (Tataouine, Kasserine, Bizerte, Tozeur) | 0.85 kWh/day (linear regression: 1.11) |
+| **End-to-end MAE with Open‑Meteo weather** (what the API really uses) | **3.64 kWh/day**, bias −0.13 kWh/day, interval coverage 80.3 % (4 380 city-days) |
 
-Reproduce the last row with `python -m production.tools.test_ville_cachee`.
+> **Read the last row.** The headline 0.65 kWh/day measures the model when it is fed the same weather data it was trained on. With Open‑Meteo weather the error is larger (about 8 % of mean daily production). Both are measured on *historical* weather: a multi-day *forecast* is less accurate still. The error range shipped with the API is calibrated on the end-to-end chain (`production/data/chain_calibration.json`).
 
-## Limitations (please read)
+Reproduce: `python -m production.tools.test_ville_cachee` (unseen cities) and `python -m production.tools.evaluate_chain` (end-to-end, needs internet).
 
-- **Training data is simulated.** Production values come from the PVGIS photovoltaic simulation (10 kWp system, 14 % losses, optimal angles), not from measured plants. The scores measure agreement with that simulation. The model is meant to be retrained on real STEG meter data.
-- **The error range reflects model error when the weather is known.** Weather forecasts beyond 2–3 days are less reliable, so the real uncertainty is larger.
-- The tilt/azimuth requested from Open-Meteo are read from the PVGIS responses (`check_pvgis_tilt.py` -> `pvgis_tilts.json`) and interpolated on latitude. [TODO: confirm the file was generated and committed; without it the code falls back to an unverified 30°]
-- **End-to-end error.** The 0.65 kWh/day figure uses PVGIS weather as input. With Open-Meteo weather (what the API really uses) the error is measured by `evaluate_chain.py`: [TODO: paste MAE, bias and interval coverage from the script output]. This measures the weather-source mismatch on historical data, not the (larger) error of a multi-day forecast.
-- The model was trained on latitudes 32.9–37.3 and longitudes 8.1–10.9. Outside this area (+0.5°) the report carries a warning (or the API refuses with `ENERX_STRICT_RANGE=1`).
-- **The news coefficient (max ±10 %) is a design choice, not a calibrated value.** In the default mode the news agent applies keyword rules to fictitious example headlines; the LLM mode is optional. [TODO: update once the LLM mode has been tested with a real API key]
-- STEG purchase tariff: 0.217 DT/kWh (excl. tax) for plants under 1 MW, taken from the 2024 JORT decree as reported by the press; to be re-checked against the official text.
+## How the dividend is computed
+
+```
+dividend per token = forecast kWh × STEG tariff (DT/kWh) × news coefficient ÷ number of tokens
+```
+
+* **STEG tariff** (DT/kWh, excl. tax): 0.217 under 1 MW · 0.201 for 1–2 MW · 0.142 for 2–10 MW. Source: the 2024 JORT decree as reported by the press — *to be re-checked against the official text*.
+* **News coefficient**: between 0.90 and 1.10, applied to revenue only. It never modifies the forecast kWh. `use_news=false` removes it.
+* **USDC** amounts use the rate in `ai/production/data/fx_rate.json` (or a live rate). While its status is not `OFFICIEL`, every report carries a warning.
 
 ## Quick start
 
-Requires Python 3.10+.
+Requirements: **Python 3.10+**, **Node 20+** and **pnpm** for the front end.
 
 ```bash
 # 1. AI service  (run every command from ai/, with `python -m`)
 cd ai
 python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env        # then fill in your values (see below)
-# ALL commands are run from this folder (project root), with `python -m`
+cp .env.example .env                                     # all keys are optional
+python -m news.run_pipeline                              # (optional) collect the news, needs internet
+uvicorn api:app --reload --port 8001                     # docs: http://127.0.0.1:8001/docs
 
-# 1. (optional) retrain the production model
-python -m production.model                    # trains the network -> production/data/solar_agent.pkl
-
-# 1b. recommended checks (internet needed)
-python -m production.tools.check_pvgis_tilt   # real PVGIS tilt per city -> production/data/pvgis_tilts.json
-python -m production.tools.evaluate_chain     # end-to-end error + calibrated interval -> production/data/chain_calibration.json
-python -m hedera.check_hash                   # Python and JavaScript hashes must match
-python -m pytest -q tests                     # unit and robustness tests (no internet)
-
-# 2. news feed (optional, fills news/data/articles_steg.json)
-python -m news.run_pipeline
-
-# 3. run the API
-uvicorn api:app --reload --port 8001          # docs: http://127.0.0.1:8001/docs (the front expects port 8001)
-
-# 4. run the end-to-end demo
-python -m examples.demo
+# 2. Dashboard
+cd ../front
+pnpm install
+pnpm dev                                                 # http://localhost:3000
 ```
 
-The trained model `solar_agent.pkl` is included, so steps 1 can be skipped.
+`front/.env.local`:
 
-### Configuration (`.env`)
+```
+NEXT_PUBLIC_API_BASE_URL=<main backend URL>
+NEXT_PUBLIC_AI_API_URL=http://localhost:8001
+```
 
-| Variable | Used for |
-|---|---|
-| `OPERATOR_ID`, `OPERATOR_KEY`, `OPERATOR_KEY_TYPE`, `NETWORK` | Hedera testnet account that pays for HCS messages (free account at https://portal.hedera.com) |
-| `HCS_TOPIC_ID` | The HCS topic where report hashes are published |
-| `GEMINI_API_KEY` | Optional: enables the LLM mode of the news agent (free key from Google AI Studio) |
-| `ANTHROPIC_API_KEY` | Optional alternative LLM provider (used only if `GEMINI_API_KEY` is absent) |
-| `ENERX_STRICT_RANGE` | Optional: `1` makes the API refuse roofs outside the training area |
+The AI predictor tab shows a **green badge** when it uses the real AI service and an **orange badge** when it falls back to a built-in simulation (service unreachable).
 
-Never commit `.env`. Only `.env.example` (placeholders) belongs in the repository.
+**No API key is needed to run the project.** Without one, `/ask` answers with extractive citations and the news coefficient stays at 1.0 with an explicit warning.
 
+The trained model (`solar_agent.pkl`) is included. The 33 MB training dataset is not (see [Limitations](#limitations)).
 
 ## API
 
-`GET /forecast?lat=32.9297&lon=10.4518&capacity_kw=10&days=7&use_news=true`
+Interactive documentation: `http://127.0.0.1:8001/docs`.
 
-| Parameter | Meaning | Default |
+### `GET /forecast`
+
+`/forecast?lat=32.9297&lon=10.4518&capacity_kw=10&days=7`
+
+| Parameter | Meaning | Default / range |
 |---|---|---|
-| `lat`, `lon` | Roof position (Tunisia) | required |
-| `capacity_kw` | Plant size | 10 |
-| `days` | Forecast horizon, 1–14 | 7 |
+| `lat`, `lon` | Roof position | required · 30–37.6 · 7.4–11.7 |
+| `capacity_kw` | Plant size | 10 · up to 10 000 |
+| `days` | Forecast horizon (best up to 7) | 7 · 1–14 |
 | `n_tokens` | Tokens issued for the plant | 1000 |
-| `tariff` | DT/kWh | STEG tariff for the plant size (0.217 under 1 MW) |
-| `use_news` | Let the news agent set the coefficient | false |
-| `news_coef` | Manual coefficient (ignored if `use_news=true`) | 1.0 |
+| `tariff` | DT/kWh | STEG tariff for the plant size |
+| `use_news` | Apply the daily news coefficient | `true` |
 
-The response contains, per day, `kwh`, `kwh_low`, `kwh_high`, `revenue_dt`, `dividend_per_token_dt` (+ low/high), then `totals`, an optional `news` block and `report_hash`. `GET /news` returns the news analysis alone, `GET /health` a status check.
+The response contains, per day, `kwh`, `kwh_low`, `kwh_high`, `revenue_dt`, `dividend_per_token_dt` (+ USDC and low/high variants), then `totals`, `assumptions`, `warnings`, a `news` block and `report_hash`.
 
-## USDC and news provenance
+### `GET /news`
+Latest relevant articles `{title, source, url, date, summary}`, refreshed in the background about every hour.
 
-- **USDC amounts are computed by the backend, not the frontend.** `aggregator.py` reads `fx_rate.json` (rate = USDC per 1 TND, source, date, status) and writes `revenue_usdc`, `dividend_per_token_usdc` (+ low/high) and the `assumptions.fx` block into the report, so the exchange rate is covered by `report_hash`. While `status` is not `OFFICIEL`, the report carries a warning. USDC is treated as 1 USD.
-- **News sources.** `news_headlines.json` items must carry a `source_url` on an allow-listed domain (e.g. TAP, Managers.tn, Business News). Items without a valid https source are rejected and listed under `news.rejected`. The allow-list is a design choice that limits invented or anonymous sources; it does not guarantee that a listed outlet is right. Without `news_headlines.json`, the agent runs on fictitious demo headlines, labelled as such.
+### `GET /ask?q=...`
+Cited answer `{answer, mode: llm | extractive | no_match, sources[]}`. Limited to 20 questions per minute per IP. Informational only.
 
-## Hedera integration (HCS)
+### `GET /health`
+`{"status": "ok"}`
 
-Every report has a SHA-256 hash, computed over the canonical JSON: `report_hash` removed, every number replaced by a fixed-decimal string (6 decimals, trailing zeros removed: `5939.0` → `"5939"`, `0.00001` → `"0.00001"`), keys sorted, compact separators, UTF-8 (reference implementations: `aggregator.hash_report` in Python and `verify_hash.js` in Node.js; `python -m hedera.check_hash` checks both agree). `hcs_anchor.py` publishes this hash, with a few readable fields, as a message in an HCS topic:
+## News, RAG and the news coefficient
+
+**Ask EnerX (`/ask`).** The corpus is the project knowledge base (`ai/rag/data/knowledge.md`) plus the collected press articles, filtered with the same relevance rules as the feed. Retrieval is BM25 in pure Python (accent-insensitive, French/English) — no model to download. With an API key a language model writes a short answer from the retrieved passages **only**, with `[n]` citations that are verified against the sources; retrieved text is treated as untrusted data. Without a key the endpoint returns the most relevant sentences. A question with no relevant source gets an honest "not found" instead of an invented answer.
+
+**Optional vector backend.** `pip install -r ai/requirements-rag.txt`, then `python -m rag.etape2_vectorisation` (sentence chunks, multilingual embeddings, ChromaDB; incremental) and `ENERX_RAG_BACKEND=chroma`. If anything is missing, the service silently stays on BM25.
+
+**Daily news coefficient.** Once a day four standard questions (grid incidents, tariff/regulation, BESS and solar projects, overall trend) are put to the RAG. Each answer becomes an impact in [−1, +1] using keyword rules with negation handling, weighted by the freshness of its sources (half-life 14 days), then combined into an index in [0, 1] mapped to a multiplier in [0.90, 1.10]. `/forecast` never computes it: it **reads the day's report** (`coefficient_news_YYYY-MM-DD.json`); if absent, it applies 1.0, adds a warning and starts a background computation. The forecast report embeds the index, the questions, the impacts and the source URLs, so the adjustment is **fully traceable and covered by the Hedera hash**.
 
 ```bash
-python -m hedera.hcs_anchor create-topic              # once: creates the topic
-python -m hedera.hcs_anchor anchor examples/demo_report.json   # anchors a report
-python -m hedera.hcs_anchor verify examples/demo_report.json 1 # checks the report against message #1 (Mirror Node)
+python -m rag.coefficient_news --planifier 06:30    # compute it every day at 06:30 (Tunis time)
 ```
 
-Anyone can verify a report later: recompute its hash and compare it with the message on the Mirror Node. If a single number was changed, the hashes differ.
+It needs a filled vector base and an LLM (Gemini, Claude or a local [Ollama](https://ollama.com) model). The weights and rules are a **design choice, not calibrated on data**, and the adjustment is capped at ±10 %.
 
-Anchoring is deliberately **not exposed as a public API route**, because it spends HBAR from the operator account. It is triggered by the backend or by the demo script.
+## Hedera integration
 
-Example anchored message: [TODO: paste the HashScan link after the first successful run]
+Every report has a SHA-256 hash computed over its canonical JSON: `report_hash` removed, every number written as a fixed-decimal string (6 decimals, trailing zeros removed), keys sorted, compact separators, UTF-8. Two reference implementations exist — `aggregator.hash_report` (Python) and `hedera/verify_hash.js` (Node.js) — and `python -m hedera.check_hash` verifies that they agree.
+
+```bash
+cd ai
+python -m hedera.hcs_anchor create-topic                          # once
+python -m hedera.hcs_anchor anchor examples/demo_report.json      # publish the hash on HCS
+python -m hedera.hcs_anchor verify examples/demo_report.json 1    # compare with message #1 on the Mirror Node
+pip install -r hedera/requirements-hedera.txt                     # needed for anchoring
+```
+
+Anyone can verify a report later by recomputing its hash and comparing it with the message on the Mirror Node: changing a single number changes the hash. Anchoring is deliberately **not a public API route**, because it spends HBAR from the operator account.
+
+## Configuration
+
+Copy `ai/.env.example` to `ai/.env`. **Never commit `.env`.**
+
+| Variable | Used for |
+|---|---|
+| `OPERATOR_ID`, `OPERATOR_KEY`, `OPERATOR_KEY_TYPE`, `NETWORK`, `HCS_TOPIC_ID` | Hedera testnet account and topic for anchoring ([free account](https://portal.hedera.com)) |
+| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | Optional LLM for `/ask` and the news coefficient |
+| `ENERX_NEWS_LLM` | Force `gemini`, `claude` or `ollama` for the news coefficient |
+| `ENERX_RAG_BACKEND` | `chroma` enables vector search for the news in `/ask` |
+| `RAG_MAX_DISTANCE` | Vector distance threshold (default 0.75, **not calibrated**) |
+| `ENERX_STRICT_RANGE` | `1` refuses roofs outside the training area |
+
+## Testing
+
+```bash
+cd ai
+pip install pytest httpx
+python -m pytest -q tests          # 91 tests, no internet and no API key needed
+```
+
+The suite covers physical plausibility of the forecast, absurd inputs, the report hash, the relevance filter, the RAG (retrieval, fallbacks, prompt-injection handling, rate limit), the vector pipeline (with a stand-in embedder) and the news coefficient (applied, neutral, degraded, hash-covered).
 
 ## Repository layout
 
 ```
-ai/
-├── api.py                    FastAPI entry point (GET /health, /forecast, /news)
-├── requirements.txt          .env.example   .gitignore
-├── production/               SOLAR PRODUCTION FORECAST -> dividend
-│   ├── forecast.py           Open-Meteo weather -> daily features -> model prediction
-│   ├── aggregator.py         dividend per token, report, SHA-256 hash
-│   ├── fx.py                 TND -> USDC rate (live, fallback data/fx_rate.json)
-│   ├── model.py              trains the neural network
-│   ├── data/                 solar_agent.pkl, fx_rate.json, pvgis_tilts.json, chain_calibration.json, dataset (csv)
-│   ├── reports/              training outputs (graphs, csv)
-│   └── tools/                check_pvgis_tilt.py, evaluate_chain.py, test_ville_cachee.py
-├── news/                     ENERGY NEWS (information only, never changes the numbers)
-│   ├── news_feed.py          what GET /news serves (reads data/articles_steg.json)
-│   ├── etape1_collecte.py    web collector       pertinence.py   relevance filter
-│   ├── nettoyer_articles.py  cleaning            injecter_steg.py  official STEG notices
-│   ├── run_pipeline.py       runs collect -> clean -> inject
-│   ├── news_fetch.py, news_agent.py   GDELT fallback (legacy)
-│   └── data/                 articles_steg.json (+ backup)
-├── hedera/                   HASH + ANCHORING ON HEDERA
-│   ├── hcs_anchor.py         publish / verify a report hash on HCS
-│   ├── verify_hash.js        JavaScript reference implementation
-│   ├── check_hash.py         Python vs JavaScript cross-check
-│   └── requirements-hedera.txt
-├── tests/                    pytest suite (robustness, relevance filter)
-├── examples/                 demo.py, demo_report.json
-└── docs/                     CHANGEMENTS_NEWS.md
+.
+├── README.md  HANDOFF.md
+├── ai/                          FastAPI AI service (Python)
+│   ├── api.py                   entry point: /health /forecast /news /ask
+│   ├── production/              forecast model, aggregator (dividend + hash), FX, evaluation tools
+│   ├── news/                    press collector, relevance filter, news feed
+│   ├── rag/                     Ask EnerX, vector pipeline, daily news coefficient
+│   ├── hedera/                  hash reference implementations + HCS anchoring
+│   ├── tests/  examples/  docs/
+│   └── requirements*.txt  .env.example
+└── front/                       Next.js dashboard (pnpm)
+    ├── app/  components/enerx/  lib/enerx/
+    └── README.md                front end ↔ backend integration guide (French)
 ```
 
-Dependencies flow one way: `api.py` -> `production` and `news`; `hedera` -> `production`; nothing in `production` imports `news`.|
+Source comments and some module names are in French (the team's working language); the public interfaces, the API and the documentation are in English.
+
+## Limitations
+
+* **Training data is simulated.** Production values come from the PVGIS photovoltaic simulation (10 kWp, 14 % losses, optimal angles), not from measured plants. Scores measure agreement with that simulation; the model is meant to be retrained on real STEG meter data.
+* **Weather forecast error is not included in the reported error ranges** beyond 2–3 days; the real uncertainty is larger than the interval shown.
+* **Training area**: latitudes 32.9–37.3, longitudes 8.1–10.9. Outside it (+0.5°) the report carries a warning (or the API refuses with `ENERX_STRICT_RANGE=1`).
+* **The news coefficient is a design choice**, not a calibrated value, and the RAG distance threshold is untuned. The coefficient needs an LLM to be computed; without one it stays neutral.
+* **The TND → USDC rate is an example** (`status: EXEMPLE`) until the official rate is set.
+* **STEG tariff** to be re-checked against the official decree.
+* **The training dataset** (`dataset_solar_global_tunisie.csv`, 33 MB) is not versioned: retraining requires obtaining it separately.
+* The AI service needs internet access to Open-Meteo; without it `/forecast` returns 502 and the dashboard shows simulated data.
+
+## Roadmap
+
+* Retrain on measured STEG meter data and report real-plant error.
+* Calibrate the news rules, weights and the RAG distance threshold on labelled examples.
+* Multi-day weather uncertainty in the error range.
+* Official TND/USDC rate feed and automatic anchoring of each published report.
+* Align the dashboard with the main backend routes (see `HANDOFF.md`).
+
+## Team, data sources and license
+
+**Team:** *[add names and roles]*
+
+**Data and services:** [Open‑Meteo](https://open-meteo.com) (weather forecast and historical weather) · [PVGIS](https://joint-research-centre.ec.europa.eu/pvgis-photovoltaic-geographical-information-system_en) (EU Joint Research Centre, simulated PV production and tilt) · Tunisian press and official STEG notices (news) · [Hedera](https://hedera.com) (HTS, HSCS, HCS).
+
+**License:** *[choose a license, e.g. MIT, and add a `LICENSE` file]*
